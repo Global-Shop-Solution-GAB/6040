@@ -1,0 +1,414 @@
+Program.Sub.ScreenSU.Start
+Gui.Form..Create
+Gui.Form..Caption("MANUAL TIME AND ATTENDANCE UPDATE")
+Gui.Form..Size(5970,2310)
+Gui.Form..MinX(5970)
+Gui.Form..MinY(2310)
+Gui.Form..Position(0,0)
+Gui.Form..BackColor(-2147483633)
+Gui.Form..MousePointer(0)
+Gui.Form..Event(UnLoad,Unload)
+Gui.Form.lbl1.Create(Label,"Please select date to update",True,3630,255,0,315,315,True,0,"Arial",8,-2147483633,0)
+Gui.Form.dtpTA.Create(DatePicker)
+Gui.Form.dtpTA.Size(3450,285)
+Gui.Form.dtpTA.Position(375,585)
+Gui.Form.cmdUpdate.Create(Button)
+Gui.Form.cmdUpdate.Size(1410,375)
+Gui.Form.cmdUpdate.Position(3825,1095)
+Gui.Form.cmdUpdate.Caption("UPDATE")
+Gui.Form.cmdUpdate.Event(Click,ProcessTA)
+Gui.F_WAIT..Create
+Gui.F_WAIT..Size(8970,1515)
+Gui.F_WAIT..MinX(0)
+Gui.F_WAIT..MinY(0)
+Gui.F_WAIT..Position(0,0)
+Gui.F_WAIT..BackColor(-2147483633)
+Gui.F_WAIT..MaxButton(False)
+Gui.F_WAIT..MinButton(False)
+Gui.F_WAIT..MousePointer(0)
+Gui.F_WAIT..Sizeable(False)
+Gui.F_WAIT..Caption("TIME AND ATTENDANCE UPDATE IN PROCESS")
+Gui.F_WAIT.lblMesage.Create(Label,"Label",True,1935,255,0,210,210,True,0,"Arial",8,-2147483633,0)
+Gui.F_WAIT.pbProgress.Create(ProgressBar)
+Gui.F_WAIT.pbProgress.Size(8265,255)
+Gui.F_WAIT.pbProgress.Position(195,495)
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+V.Global.Logs.Declare(String)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Coder: FEQ (Sisco)
+'Date: July, 2020
+'Customer: Best Manufacturing Inc
+'Contact: Sam Walker (sam@bestmanufacturinginc.com) or Judy Howell (jhowell@rsac.com)
+'This project is intended to work as a time and attendance integration into Dayforce RESTful. It is expected to execute once a day and pull in clock in and clock out information from GS and push it into DAYFORCE using REST API. The information being pushed will be clock in and clock out times, including the break times for employees.
+'The script will be attached to an unattended process and run on a nightly basis, but we will also create a custom menu item so that any user with permission to access the menu item can select a date and the process will be manually uploaded for that date.
+'For API documentation for the Ceridian/Daystar web services: https://developers.dayforce.com/Build/API-Explorer/Time-Management/POST-Employee-Raw-Punches.aspx
+'Best Manufacturing agreed to store the Ceridian/Daystar employee ID in the Global Shop system under Employee Master, Comments 1 field.
+'This program offers a thorough reporting of errors, printed into the Global/Custom/6040/Logs when the process is completed. The errors relating to the POST requests are coming from the web services API's return.
+
+F.Intrinsic.Control.Try
+
+'We check to see where the project is being fired from: To do this we will need to set up flags. Lets assume that the SWITCH M will be for MenuItem
+F.Intrinsic.Control.SelectCase(V.Caller.Switches.Trim)
+	F.Intrinsic.Control.Case("M")
+		
+		'We just want to display the screen
+		V.Global.Logs.Set("Uploading time and attendance records manually ")
+		Gui.Form..Show
+
+	F.Intrinsic.Control.CaseElse
+
+		'We are going straight into the processing
+		V.Global.Logs.Set("Uploading time and attendance records automatically ")
+'		Gui.Form.dtpTA.Value("04/05/2020")
+'		Gui.Form.dtpTA.Text(V.Ambient.Date)
+
+		F.Intrinsic.Control.CallSub(ProcessTA)
+
+'		'TEST *******************************************************
+'		Gui.Form.dtpTA.Text("04/05/2020")
+'		Gui.Form..Show
+'		'************************************************************
+
+F.Intrinsic.Control.EndSelect
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(Error)
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.Try
+
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.End
+
+F.Intrinsic.Control.EndTry
+Program.Sub.Unload.End
+
+Program.Sub.Error.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare(String, "")
+
+F.Intrinsic.String.Build("{1}{1}{1}Error in the script: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}", V.Caller.ScriptFile, V.Ambient.Newline, V.Args.Subroutine, V.Ambient.ErrorNumber, V.Ambient.ErrorDescription, V.Ambient.GABVersion, V.Local.sError)
+
+F.Intrinsic.String.Build("{0}{1}{2}{2}", V.Global.Logs, V.Local.sError, V.Ambient.NewLine, V.Global.Logs)
+
+F.Intrinsic.Control.Callsub(CreateLog)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.End
+
+F.Intrinsic.Control.EndTry
+Program.Sub.Error.End
+
+Program.Sub.ProcessTA.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare(String, "")
+V.Local.sDate.Declare(String, "")
+V.Local.sSql.Declare(String, "")
+V.Local.sFilter.Declare(String, "")
+V.Local.sEmps.Declare(String, "")
+V.Local.iLoop.Declare(Long, 0)
+
+F.ODBC.Connection!conx.OpenCompanyConnection
+
+Gui.Form..Visible(False)
+gui.F_WAIT.lblMesage.Text("Time and attendance upload in progress.")
+gui.F_WAIT..Show
+
+'We are going to gather information from the Time_Attendance table for the selected date and process it 
+V.Local.sDate.Set(V.Screen.Form!dtpTA.Value)
+
+F.Intrinsic.String.Build("{0}for date {1}...{2}", V.Global.Logs, V.Local.sDate, V.Ambient.NewLine, V.Global.Logs)
+
+F.Intrinsic.String.Build("SELECT EMPLOYEE, NAME, DATE_IN, TIME_IN, DATE_OUT, TIME_OUT from V_TIME_ATTENDANCE where DATE_IN = '{0}' OR DATE_OUT = '{0}' order by EMPLOYEE ASC, DATE_IN ASC, TIME_IN ASC", V.Local.sDate.PervasiveDate, V.Local.sSql)
+F.Data.DataTable.CreateFromSQL("dtTAData", "conx", V.Local.sSql, True)
+
+F.Data.DataTable.AddColumn("dtTAData", "BADGE", "String")
+
+'Get the employee badge information
+F.Data.Dictionary.CreateFromSQL("dicBadge", "conx", "SELECT EMPLOYEE, COMMENTS_3 from V_EMPLOYEE_MSTR")
+F.Data.Dictionary.SetDefaultReturn("dicBadge", "")
+
+F.Data.DataTable.FillFromDictionary("dtTAData", "dicBadge", "EMPLOYEE", "BADGE")
+
+F.Data.Dictionary.Close("dicBadge")
+
+'F.Data.DataTable.AddColumn("dtTAData", "BADGE", "String", "ARTIFICIAL")
+
+F.Intrinsic.Control.If(V.DataTable.dtTAData.RowCount, >, 0)
+
+	'Lets report all employees that were found to not have a badge:
+	F.Data.DataView.Create("dtTAData", "dvNoBadge", 22, "BADGE = ''", "")
+	F.Intrinsic.Control.If(V.DataView.dtTAData!dvNoBadge.RowCount, >, 0)
+		F.Data.DataView.ToDataTableDistinct("dtTAData", "dvNoBadge", "dtNoBadge", "NAME")
+		F.Data.DataView.Create("dtNoBadge", "dvNames")
+
+		'We want to include these in the logs
+		F.Data.DataView.ToString("dtNoBadge", "dvNames", "NAME", " ", V.Ambient.NewLine, V.Local.sEmps)
+
+		F.Intrinsic.String.Build("{0}The following employees do not have a bagde set up:{1}{2}{1}{1}", V.Global.Logs, V.Ambient.NewLine, V.Local.sEmps, V.Global.Logs)
+
+		F.Data.DataView.Close("dtNoBadge", "dvNames")
+		F.Data.DataTable.Close("dtNoBadge")
+
+	F.Intrinsic.Control.EndIf
+
+	F.Data.DataView.Close("dtTAData", "dvNoBadge")
+
+	'Now we process the employees with a badge
+	F.Data.DataView.Create("dtTAData", "dvTAView", 22, "BADGE <> ''", "")
+	F.Data.DataView.ToDataTableDistinct("dtTAData", "dvTAView", "dtEmps", "EMPLOYEE", True)
+
+	F.Intrinsic.String.Build("{0}{1} records found for {2} employees.{3}{3}", V.Global.Logs, V.DataTable.dtTAData.RowCount, V.DataTable.dtEmps.RowCount, V.Ambient.NewLine, V.Global.Logs)
+
+	gui.F_WAIT.pbProgress.Min(0)
+	gui.F_WAIT.pbProgress.Max(V.DataTable.dtEmps.RowCount--)
+
+	F.Intrinsic.Control.For(V.Local.iLoop, 0, V.DataTable.dtEmps.RowCount--, 1)
+		'We will process the data by employee
+'		F.Intrinsic.String.Build("[EMPLOYEE] = '{0}'", V.DataTable.dtEmps.EMPLOYEE!FieldValtrim, V.Local.sFilter)
+'		F.Data.DataView.Create("dtTAData", "dvEmployee", 22, V.Local.sFilter, "DATE_IN ASC, TIME_IN ASC")
+		gui.F_WAIT.pbProgress.Value(V.Local.iLoop)
+		F.Intrinsic.Control.CallSub(PostingTimes, "ROW", V.Local.iLoop)
+
+	F.Intrinsic.Control.Next(V.Local.iLoop)
+
+	F.Intrinsic.String.Build("{0}{1}{1}Time and attendance upload has been completed.", V.Global.Logs, V.Ambient.NewLine, V.Global.Logs)
+F.Intrinsic.Control.Else
+
+	F.Intrinsic.String.Build("{0}{1}{1}No Records found for processed date.", V.Global.Logs, V.Ambient.NewLine, V.Global.Logs)
+
+F.Intrinsic.Control.EndIf
+
+gui.F_WAIT..Visible(False)
+
+F.Intrinsic.Control.CallSub(CreateLog)
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(Error, "SUBROUTINE", V.Ambient.CurrentSubroutine)
+	F.Intrinsic.Control.CallSub(CreateLog)
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndTry
+Program.Sub.ProcessTA.End
+
+Program.Sub.PostingTimes.Start
+F.Intrinsic.Control.Try
+V.Local.sFilter.Declare(String, "")
+V.Local.sJSON.Declare(String, "")
+V.Local.sEmployee.Declare(String, "")
+V.Local.sPunchTime.Declare(String, "")
+V.Local.sNextPunchType.Declare(String, "")
+V.Local.dProcessDate.Declare(Date, "01/01/1900")
+V.Local.dCheckDate.Declare(Date, "01/01/1900")
+V.Local.iRow.Declare(Long, 0)
+
+V.Local.iRow.Set(V.Args.ROW.Long)
+V.Local.dProcessDate.Set(V.Screen.Form!dtpTA.Value)
+
+F.Intrinsic.String.Build("[EMPLOYEE] = '{0}'", V.DataTable.dtEmps.EMPLOYEE(V.Local.iRow)!FieldValtrim, V.Local.sFilter)
+F.Data.DataView.Create("dtTAData", "dvEmployee", 22, V.Local.sFilter, "DATE_IN ASC, TIME_IN ASC")
+
+''For some DUMB reason, if the screen is not up, we cannot access the date from the dtp, so we have to do another motherfucking check
+'F.Intrinsic.Control.SelectCase(V.Caller.Switches.Trim)
+'	F.Intrinsic.Control.Case("M")
+'	
+'		V.Local.dProcessDate.Set(V.Screen.Form!dtpTA.Value)
+'		
+'	F.Intrinsic.Control.CaseElse
+'		
+'		V.Local.dProcessDate.Set(V.Ambient.Date)
+'		
+'F.Intrinsic.Control.EndSelect
+
+V.Local.sEmployee.Set(V.DataView.dtTAData!dvEmployee(0).BADGE!FieldValTrim)
+
+F.Intrinsic.String.Build("{0}{4}Updating records for Employee '{1}'.{4}GSS ID: '{2}', Ceridian Dayforce ID: '{3}'{4}", V.Global.Logs, V.DataView.dtTAData!dvEmployee(0).NAME!FieldValTrim, V.DataView.dtTAData!dvEmployee(0).EMPLOYEE!FieldValTrim, V.Local.sEmployee, V.Ambient.NewLine, V.Global.Logs)
+
+'We expect the first time the 
+V.Local.sNextPunchType.Set("Punch_In")
+
+'We want to go through the data line by line for the employee and create clock in and clock out records individually
+F.Intrinsic.Control.For(V.Local.iRow, 0, V.DataView.dtTAData!dvEmployee.RowCount--, 1)
+
+	V.Local.dCheckDate.Set(V.DataView.dtTAData!dvEmployee(V.Local.iRow).DATE_IN!FieldValTrim)
+
+	'The checks are necessary so that 
+	F.Intrinsic.Control.If(V.Local.dCheckDate, =, V.Local.dProcessDate)
+
+		'FORTESTINGPURPOSES *****************************************************************
+'		V.Local.dProcessDate.Set("04/01/2020")
+		'************************************************************************************
+
+		'RawPunchTime needs to be UTC. The -04:00 is the time zone differential, which from my research, cooresponds to US Central
+		F.Intrinsic.String.Build("{0}T{1}-04:00", V.Local.dProcessDate.PervasiveDate, V.DataView.dtTAData!dvEmployee(V.Local.iRow).TIME_IN!FieldVal, V.Local.sPunchTime)
+
+		F.Intrinsic.String.Build("{{0}EmployeeBadge{0}: {0}{1}{0}, {0}RawPunchTime{0}: {0}{2}{0}, {0}PunchType{0}: {0}{3}{0}, {0}PunchDevice{0}: {0}BEST{0}}", V.Ambient.DblQuote, V.Local.sEmployee, V.Local.sPunchtime, V.Local.sNextPunchType, V.Local.sJSON)
+
+		F.Intrinsic.Control.CallSub(APIInteraction, "BODY", V.Local.sJSON, "ROW", V.Local.iRow)
+
+		V.Local.sNextPunchType.Set("Meal_Out")
+	F.Intrinsic.Control.Else
+
+		'The only instance of this happening would be when the person is clocking out from a previous day, so the next punch type would be to clock out
+		V.Local.sNextPunchType.Set("Punch_Out")
+
+	F.Intrinsic.Control.EndIf
+
+	V.Local.dCheckDate.Set(V.DataView.dtTAData!dvEmployee(V.Local.iRow).DATE_OUT!FieldValTrim)
+
+	'The checks are necessary so that 
+	F.Intrinsic.Control.If(V.Local.dCheckDate, =, V.Local.dProcessDate)
+
+		F.Intrinsic.Control.If(V.Local.iRow, =,  V.DataView.dtTAData!dvEmployee.RowCount--)
+			V.Local.sNextPunchType.Set("Punch_Out")
+
+			'FORTESTINGPURPOSES *****************************************************************
+'			V.Local.dProcessDate.Set("04/01/2020")
+'			V.Local.sEmployee.Set("43963378")
+			'************************************************************************************
+		F.Intrinsic.Control.EndIf
+
+		'RawPunchTime needs to be UTC. The -04:00 is the time zone differential, which from my research, cooresponds to US Central
+		F.Intrinsic.String.Build("{0}T{1}-04:00", V.Local.dProcessDate.PervasiveDate, V.DataView.dtTAData!dvEmployee(V.Local.iRow).TIME_OUT!FieldVal, V.Local.sPunchTime)
+
+		F.Intrinsic.String.Build("{{0}EmployeeBadge{0}: {0}{1}{0}, {0}RawPunchTime{0}: {0}{2}{0}, {0}PunchType{0}: {0}{3}{0}, {0}PunchDevice{0}: {0}BEST{0}}", V.Ambient.DblQuote, V.Local.sEmployee, V.Local.sPunchtime, V.Local.sNextPunchType, V.Local.sJSON)
+
+		F.Intrinsic.Control.CallSub(APIInteraction, "BODY", V.Local.sJSON, "ROW", V.Local.iRow)
+
+		'If we just punched out, we should expect the next punch to be a punch in. Otherwise we are breaking for lunch
+		F.Intrinsic.Control.If(V.Local.sNextPunchType, =, "Punch_Out")
+			V.Local.sNextPunchType.Set("Punch_In")
+		F.Intrinsic.Control.Else
+			V.Local.sNextPunchType.Set("Meal_In")
+		F.Intrinsic.Control.EndIf
+
+	F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Next(V.Local.iRow)
+
+F.Data.DataView.Close("dtTAData", "dvEmployee")
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.If(V.DataView.dtTAData!dvEmployee.Exists, =, True)
+		F.Data.DataView.Close("dtTAData", "dvEmployee")
+	F.Intrinsic.Control.EndIf
+
+	F.Intrinsic.Control.CallSub(Error, "SUBROUTINE", V.Ambient.CurrentSubroutine)
+F.Intrinsic.Control.EndTry
+Program.Sub.PostingTimes.End
+
+Program.Sub.APIInteraction.Start
+F.Intrinsic.Control.Try
+V.Local.sUser.Declare(String, "")
+V.Local.sPass.Declare(String, "")
+V.Local.sURL.Declare(String, "")
+V.Local.sRet.Declare(String, "")
+V.Local.sBody.Declare(String, "")
+V.Local.sTemp.Declare(String, "")
+V.Local.sResponse.Declare(String, "")
+
+'We are going to push the time entry into their web service using REST API. The API uses Basic Authorization, and thus we use credentials provided by them to post the times.
+V.Local.sUser.Set("RsteelBESTAppuser")
+V.Local.sPass.Set("Welcome12345")
+V.Local.sBody.Set(V.Args.BODY)
+
+'Testing in an error***************************
+'F.Intrinsic.String.Build("{{0}EmployeeBadge{0}: {0}43963378{0},  {0}RawPunchTime{0}: {0}20211:28:28-04:00{0},  {0}PunchType{0}: {0}Punch_In{0},  {0}PunchDevice{0}: {0}BEST132{0}}", V.Ambient.DblQuote, V.Local.sBody)
+'**********************************************
+
+F.Communication.REST.SetProperty("HTTPMethod", "POST")
+F.Communication.REST.SetProperty("User", V.Local.sUser)
+F.Communication.REST.SetProperty("Password", V.Local.sPass)
+F.Communication.REST.SetProperty("ContentType", "application/json; charset=utf-8")
+F.Communication.REST.SetProperty("Accept", "application/json")
+
+F.Communication.REST.Config("SSLEnabledProtocols=4032",V.Local.sRet)
+F.Communication.REST.SetProperty("PostData", V.Local.sBody)
+
+'For test****************************
+'F.Intrinsic.String.Build("{0}{1}Attempting query:{1}{2}{1}", V.Global.Logs, V.Ambient.NewLine, V.Local.sBody, V.Global.Logs)
+'*****************************************
+
+'This is their test environment
+'V.Local.sURL.Set("https://usconfigr58.dayforcehcm.com/api/RSteel/V1/EmployeeRawPunches")
+
+'This is their live environment
+'V.Local.sURL.Set("https://usr59.dayforcehcm.com/api/RSteel/V1/EmployeeRawPunches")
+
+'This is their live environment
+V.Local.sURL.Set("https://us59-services.dayforcehcm.com/Api/rsteel/V1/EmployeeRawPunches")
+
+F.Communication.REST.Post(V.Local.sURL)
+
+F.Communication.REST.DoEvents()
+F.Communication.REST.ReadProperty("TransferredData", V.Local.sTemp)
+
+'We will need to parse the return and verify that it was posted correctly.
+F.Intrinsic.String.Split(V.Local.sTemp, "ERROR", V.Local.sResponse)
+F.Intrinsic.Control.If(V.Local.sResponse.UBound, >, 0)
+	'We had an issue uploading the time, so report it
+	F.Intrinsic.String.Build("{0}Error encountered in API tyring to process the query:{1}{2}", V.Global.Logs, V.Ambient.NewLine, V.Local.sBody, V.Global.Logs)
+	F.Intrinsic.String.Build("{0},{0}", V.Ambient.DblQuote, V.Local.sTemp)
+	F.Intrinsic.String.Replace(V.Local.sResponse(1), V.Local.sTemp, V.Ambient.DblQuote, V.Local.sResponse(0))
+	F.Intrinsic.String.Replace(V.Local.sResponse, "}]}", "", V.Local.sResponse)
+	F.Intrinsic.String.Replace(V.Local.sResponse, "Message", "Error Message", V.Local.sResponse)
+	F.Intrinsic.String.Build("{0}{1}{2}{2}", V.Global.Logs, V.Local.sResponse, V.Ambient.NewLine, V.Global.Logs)
+
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(Error, "SUBROUTINE", V.Ambient.CurrentSubroutine)
+F.Intrinsic.Control.EndTry
+Program.Sub.APIInteraction.End
+
+Program.Sub.CreateLog.Start
+F.Intrinsic.Control.Try
+V.Local.sDirectory.Declare(String, "")
+V.Local.sFileName.Declare(String, "")
+V.Local.sMessage.Declare(String, "")
+V.Local.bCheck.Declare(Boolean, False)
+
+'Verify directory exists
+F.Intrinsic.String.Build("{0}\Custom\6040\", V.Caller.GlobalDir, V.Local.sDirectory)
+
+F.Intrinsic.File.DirExists(V.Local.sDirectory, V.Local.bCheck)
+F.Intrinsic.Control.If(V.Local.bCheck, =, False)
+	F.Intrinsic.File.CreateDir(V.Local.sDirectory)
+F.Intrinsic.Control.EndIf
+
+'Verify directory exists
+F.Intrinsic.String.Build("{0}\Custom\6040\Logs\", V.Caller.GlobalDir, V.Local.sDirectory)
+
+F.Intrinsic.File.DirExists(V.Local.sDirectory, V.Local.bCheck)
+F.Intrinsic.Control.If(V.Local.bCheck, =, False)
+	F.Intrinsic.File.CreateDir(V.Local.sDirectory)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Build("TIMEANDATTENDANCEUPLOADLOGS{0}.txt", V.Ambient.Now, V.Local.sFileName)
+F.Intrinsic.File.MakeFilenameFriendly(V.Local.sFileName, V.Local.sFileName)
+F.Intrinsic.String.Replace(V.Local.sFileName, " ", "", V.Local.sFileName)
+F.Intrinsic.String.Build("{0}\Custom\6040\Logs\{1}", V.Caller.GlobalDir, V.Local.sFileName, V.Local.sFileName)
+
+F.Intrinsic.File.String2File(V.Local.sFileName, V.Global.Logs)
+
+F.Intrinsic.Control.If(V.Caller.Switches, =, "M")
+	F.Intrinsic.String.Build("Time and attendance upload has been completed.{0}Check log file {0}{1}{0}for details.", V.Ambient.NewLine, V.Local.sFileName, V.Local.sMessage)
+	F.Intrinsic.UI.Msgbox(V.Local.sMessage, "UPLOAD COMPLETED")
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(Error, "SUBROUTINE", V.Ambient.CurrentSubroutine)
+F.Intrinsic.Control.EndTry
+Program.Sub.CreateLog.End
+
+Program.Sub.Comments.Start
+${$0$}$$}$$}$12:00:00 AM$}$False
+Program.Sub.Comments.End
